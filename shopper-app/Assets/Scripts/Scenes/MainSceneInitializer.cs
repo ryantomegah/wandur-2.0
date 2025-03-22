@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using System.Collections;
+using System.Collections.Generic;
 
 public class MainSceneInitializer : MonoBehaviour
 {
@@ -12,6 +13,7 @@ public class MainSceneInitializer : MonoBehaviour
     [SerializeField] private GameObject oriientSDKManagerPrefab;
     [SerializeField] private GameObject geofencingManagerPrefab;
     [SerializeField] private GameObject mallScenePrefab;
+    [SerializeField] private GameObject analyticsManagerPrefab;
     
     [Header("Scene Settings")]
     [SerializeField] private bool useARMode = true;
@@ -32,10 +34,21 @@ public class MainSceneInitializer : MonoBehaviour
     private GeofencingManager geofencingManager;
     private UIManager uiManager;
     private SampleMallScene mallScene;
+    private AnalyticsManager analyticsManagerComponent;
     
     private void Start()
     {
+        Debug.Log("Initializing Wandur App...");
+        
         Initialize();
+        
+        // Track app start
+        if (analyticsManagerComponent != null)
+        {
+            analyticsManagerComponent.TrackScreenView("main_screen");
+        }
+        
+        Debug.Log("Wandur App initialized successfully.");
     }
     
     private void Initialize()
@@ -127,6 +140,14 @@ public class MainSceneInitializer : MonoBehaviour
         {
             GameObject geoObj = new GameObject("GeofencingManager");
             geofencingManager = geoObj.AddComponent<GeofencingManager>();
+        }
+        
+        // Create analytics manager
+        if (analyticsManagerComponent == null && analyticsManagerPrefab != null)
+        {
+            GameObject analyticsObj = Instantiate(analyticsManagerPrefab);
+            analyticsObj.name = "AnalyticsManager";
+            analyticsManagerComponent = analyticsObj.GetComponent<AnalyticsManager>();
         }
     }
     
@@ -278,6 +299,46 @@ public class MainSceneInitializer : MonoBehaviour
         {
             StartCoroutine(DelayedUIPopulation());
         }
+        
+        // Connect Analytics to UI
+        if (analyticsManagerComponent != null && uiManager != null)
+        {
+            uiManager.OnScreenChanged += (screenName) => {
+                analyticsManagerComponent.TrackScreenView(screenName);
+            };
+            
+            uiManager.OnStoreSelected += (storeId, storeName) => {
+                analyticsManagerComponent.TrackStoreView(storeId, storeName);
+            };
+            
+            uiManager.OnNavigationRequested += (storeId, storeName, startPos, destPos) => {
+                analyticsManagerComponent.TrackNavigationStart(storeId, storeName, startPos, destPos);
+            };
+            
+            uiManager.OnPromotionViewed += (promotionId, storeId) => {
+                analyticsManagerComponent.TrackPromotionView(promotionId, storeId);
+            };
+            
+            uiManager.OnPromotionClaimed += (promotionId, storeId) => {
+                analyticsManagerComponent.TrackPromotionClaim(promotionId, storeId);
+            };
+        }
+        
+        // Connect Analytics to Navigation
+        if (analyticsManagerComponent != null && navigationManager != null)
+        {
+            navigationManager.OnNavigationStarted += (storeId, storeName, startPos, destPos) => {
+                analyticsManagerComponent.TrackNavigationStart(storeId, storeName, startPos, destPos);
+            };
+            
+            navigationManager.OnNavigationEnded += (storeId, completed, distance) => {
+                analyticsManagerComponent.TrackNavigationEnd(storeId, completed, distance);
+            };
+            
+            navigationManager.OnDivineLineVisibilityChanged += (visible, duration, storeId) => {
+                analyticsManagerComponent.TrackDivineLineVisibility(visible, duration, storeId);
+            };
+        }
     }
     
     private IEnumerator DelayedUIPopulation()
@@ -296,6 +357,59 @@ public class MainSceneInitializer : MonoBehaviour
         {
             // Implement method to populate UI with mall data
             Debug.Log("Populated UI with mall data");
+        }
+    }
+    
+    private void OnDestroy()
+    {
+        // Clean up event subscriptions
+        if (sdkManager != null && sdkIntegration != null && analyticsManagerComponent != null)
+        {
+            sdkIntegration.OnPositionUpdated -= (position) => {
+                sdkManager.SimulatePositionUpdate(position, 0);
+            };
+            
+            sdkIntegration.OnHeadingUpdated -= (heading) => {
+                sdkManager.SimulateHeadingUpdate(heading);
+            };
+        }
+        
+        if (uiManager != null && analyticsManagerComponent != null)
+        {
+            uiManager.OnScreenChanged -= (screenName) => {
+                analyticsManagerComponent.TrackScreenView(screenName);
+            };
+            
+            uiManager.OnStoreSelected -= (storeId, storeName) => {
+                analyticsManagerComponent.TrackStoreView(storeId, storeName);
+            };
+            
+            uiManager.OnNavigationRequested -= (storeId, storeName, startPos, destPos) => {
+                analyticsManagerComponent.TrackNavigationStart(storeId, storeName, startPos, destPos);
+            };
+            
+            uiManager.OnPromotionViewed -= (promotionId, storeId) => {
+                analyticsManagerComponent.TrackPromotionView(promotionId, storeId);
+            };
+            
+            uiManager.OnPromotionClaimed -= (promotionId, storeId) => {
+                analyticsManagerComponent.TrackPromotionClaim(promotionId, storeId);
+            };
+        }
+        
+        if (navigationManager != null && analyticsManagerComponent != null)
+        {
+            navigationManager.OnNavigationStarted -= (storeId, storeName, startPos, destPos) => {
+                analyticsManagerComponent.TrackNavigationStart(storeId, storeName, startPos, destPos);
+            };
+            
+            navigationManager.OnNavigationEnded -= (storeId, completed, distance) => {
+                analyticsManagerComponent.TrackNavigationEnd(storeId, completed, distance);
+            };
+            
+            navigationManager.OnDivineLineVisibilityChanged -= (visible, duration, storeId) => {
+                analyticsManagerComponent.TrackDivineLineVisibility(visible, duration, storeId);
+            };
         }
     }
 } 

@@ -3,6 +3,7 @@ using UnityEngine.UI;
 using TMPro;
 using System;
 using System.Collections.Generic;
+using System.Collections;
 
 public class UIManager : MonoBehaviour
 {
@@ -12,6 +13,7 @@ public class UIManager : MonoBehaviour
     [SerializeField] private GameObject storeDetailScreen;
     [SerializeField] private GameObject navigationScreen;
     [SerializeField] private GameObject settingsScreen;
+    [SerializeField] private GameObject rewardsScreen;
     
     [Header("Store Directory")]
     [SerializeField] private RectTransform storeListContainer;
@@ -47,6 +49,21 @@ public class UIManager : MonoBehaviour
     [SerializeField] private Slider soundVolumeSlider;
     [SerializeField] private Toggle notificationsToggle;
     
+    [Header("Gamification UI")]
+    [SerializeField] private GameObject achievementNotification;
+    [SerializeField] private Text achievementText;
+    [SerializeField] private GameObject pointsEarnedNotification;
+    [SerializeField] private Text pointsEarnedText;
+    [SerializeField] private GameObject progressBar;
+    [SerializeField] private Image progressFill;
+    [SerializeField] private Text progressText;
+    
+    [Header("Promotion UI")]
+    [SerializeField] private GameObject promotionPanel;
+    [SerializeField] private Text promotionTitleText;
+    [SerializeField] private Text promotionDescriptionText;
+    [SerializeField] private Button claimPromotionButton;
+    
     // References to other managers
     private WandurAppManager appManager;
     private ARNavigationManager navigationManager;
@@ -55,6 +72,11 @@ public class UIManager : MonoBehaviour
     public event Action<string> OnStoreSelected;
     public event Action OnNavigationStarted;
     public event Action OnNavigationStopped;
+    public event Action<string> OnScreenChanged;
+    public event Action<string, string> OnPromotionViewed;
+    public event Action<string, string> OnPromotionClaimed;
+    public event Action<int> OnPointsEarned;
+    public event Action<string> OnAchievementUnlocked;
     
     // Store data
     private List<StoreData> allStores = new List<StoreData>();
@@ -62,6 +84,10 @@ public class UIManager : MonoBehaviour
     private StoreData selectedStore;
     private string currentCategory = "All";
     private string searchQuery = "";
+    private Coroutine navigationUpdateCoroutine;
+    private int userPoints = 0;
+    private int userLevel = 1;
+    private float navigationStartTime;
     
     private void Awake()
     {
@@ -124,6 +150,9 @@ public class UIManager : MonoBehaviour
             
         if (arStartButton != null)
             arStartButton.onClick.AddListener(StartARNavigation);
+        
+        if (claimPromotionButton != null)
+            claimPromotionButton.onClick.AddListener(OnClaimPromotionButtonClicked);
     }
     
     private void LoadSampleStoreData()
@@ -403,6 +432,7 @@ public class UIManager : MonoBehaviour
         if (storeDetailScreen != null) storeDetailScreen.SetActive(false);
         if (navigationScreen != null) navigationScreen.SetActive(false);
         if (settingsScreen != null) settingsScreen.SetActive(false);
+        if (rewardsScreen != null) rewardsScreen.SetActive(false);
         if (arPromptScreen != null) arPromptScreen.SetActive(false);
         
         // Show the requested screen
@@ -455,5 +485,105 @@ public class UIManager : MonoBehaviour
             
         if (arStartButton != null)
             arStartButton.onClick.RemoveAllListeners();
+        
+        if (claimPromotionButton != null)
+            claimPromotionButton.onClick.RemoveAllListeners();
+    }
+    
+    private void ShowPromotion(StoreData store)
+    {
+        if (promotionPanel == null || store.activePromotion == null) return;
+        
+        promotionPanel.SetActive(true);
+        
+        if (promotionTitleText != null) 
+        {
+            promotionTitleText.text = store.activePromotion.title;
+        }
+        
+        if (promotionDescriptionText != null)
+        {
+            promotionDescriptionText.text = store.activePromotion.description;
+        }
+        
+        // Trigger promotion viewed event for analytics
+        OnPromotionViewed?.Invoke(store.activePromotion.id, store.id);
+    }
+    
+    private void HidePromotion()
+    {
+        if (promotionPanel == null) return;
+        
+        promotionPanel.SetActive(false);
+    }
+    
+    private void OnClaimPromotionButtonClicked()
+    {
+        if (selectedStore == null || selectedStore.activePromotion == null) return;
+        
+        // Handle promotion claim
+        ShowAchievement($"Claimed: {selectedStore.activePromotion.title}");
+        
+        // Award bonus points for claiming promotion
+        int bonusPoints = 25;
+        userPoints += bonusPoints;
+        UpdateUserProfile();
+        ShowPointsEarned(bonusPoints);
+        
+        // Hide promotion after claiming
+        HidePromotion();
+        
+        // Trigger promotion claimed event for analytics
+        OnPromotionClaimed?.Invoke(selectedStore.activePromotion.id, selectedStore.id);
+    }
+    
+    private void ShowAchievement(string achievementName)
+    {
+        if (achievementNotification == null || achievementText == null) return;
+        
+        achievementText.text = achievementName;
+        achievementNotification.SetActive(true);
+        
+        // Hide after delay
+        StartCoroutine(HideNotificationAfterDelay(achievementNotification, 3.0f));
+        
+        // Trigger achievement event for analytics
+        OnAchievementUnlocked?.Invoke(achievementName);
+    }
+    
+    private IEnumerator HideNotificationAfterDelay(GameObject notification, float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        notification.SetActive(false);
+    }
+    
+    private void UpdateUserProfile()
+    {
+        // Calculate level based on points
+        userLevel = 1 + (userPoints / 500);
+        
+        // Update UI
+        if (progressText != null) progressText.text = $"{userPoints}/{userLevel * 500}";
+        
+        // Update progress bar
+        if (progressBar != null && progressFill != null)
+        {
+            float progress = (float)userPoints / (userLevel * 500);
+            progressFill.fillAmount = progress;
+        }
+    }
+    
+    private void ShowPointsEarned(int points)
+    {
+        if (pointsEarnedNotification == null || pointsEarnedText == null) return;
+        
+        pointsEarnedText.text = $"+{points} points";
+        pointsEarnedNotification.SetActive(true);
+        
+        // Hide after delay
+        StartCoroutine(HideNotificationAfterDelay(pointsEarnedNotification, 3.0f));
+        
+        // Trigger points earned event for analytics
+        OnPointsEarned?.Invoke(points);
     }
 } 

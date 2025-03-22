@@ -3,6 +3,8 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System;
+using System.Collections;
 
 [RequireComponent(typeof(ARRaycastManager))]
 public class ARNavigationManager : MonoBehaviour
@@ -32,6 +34,19 @@ public class ARNavigationManager : MonoBehaviour
     private bool isNavigating = false;
     private Vector3 destination;
     private float lastPathUpdateTime;
+    private Coroutine pathUpdateCoroutine;
+    private float divineLineVisibleStartTime;
+    private bool isDivineLineVisible = false;
+    private string currentNavigationStoreId = "";
+    private string currentNavigationStoreName = "";
+
+    // Events for analytics tracking
+    public event Action<string, string, Vector3, Vector3> OnNavigationStarted;
+    public event Action<string, bool, float> OnNavigationEnded;
+    public event Action<bool, float, string> OnDivineLineVisibilityChanged;
+
+    // Positioning system reference
+    private OriientSDKManager positioningSystem;
 
     private void Awake()
     {
@@ -73,31 +88,106 @@ public class ARNavigationManager : MonoBehaviour
         }
     }
 
-    public void StartNavigation(Vector3 targetPosition)
+    public void Initialize(ARSession session, Camera camera)
     {
-        destination = targetPosition;
-        isNavigating = true;
-
-        // Place destination marker
-        if (destinationMarker == null && destinationMarkerPrefab != null)
+        arSession = session;
+        arCamera = camera;
+        
+        // Get AR components from the session GameObject
+        if (raycastManager == null)
         {
-            destinationMarker = Instantiate(destinationMarkerPrefab, targetPosition, Quaternion.identity);
+            raycastManager = arSession.GetComponentInChildren<ARRaycastManager>();
         }
-        else if (destinationMarker != null)
+        
+        if (planeManager == null)
         {
-            destinationMarker.transform.position = targetPosition;
+            planeManager = arSession.GetComponentInChildren<ARPlaneManager>();
         }
-
-        // Initial path calculation
-        CalculatePath(arCamera.transform.position, targetPosition);
-        lastPathUpdateTime = Time.time;
+        
+        // Subscribe to plane changed event for path updates
+        if (planeManager != null)
+        {
+            planeManager.planesChanged += OnPlanesChanged;
+        }
+        
+        // Initialize divine line renderer
+        if (pathRenderer != null && divineMaterial != null)
+        {
+            pathRenderer.Initialize(divineMaterial, pathWidth, pathHeight, pathColor);
+        }
+        
+        Debug.Log("AR Navigation Manager initialized");
     }
 
-    public void StopNavigation()
+    public void InitializeForVirtualMode(Camera virtualCamera)
     {
-        isNavigating = false;
-        currentPath.Clear();
+        arCamera = virtualCamera;
+        
+        // No AR components in virtual mode
+        arSession = null;
+        raycastManager = null;
+        planeManager = null;
+        
+        // Initialize divine line renderer
+        if (pathRenderer != null && divineMaterial != null)
+        {
+            pathRenderer.Initialize(divineMaterial, pathWidth, pathHeight, pathColor);
+        }
+        
+        Debug.Log("AR Navigation Manager initialized for virtual mode");
+    }
 
+    public void SetPositioningSystem(OriientSDKManager system)
+    {
+        positioningSystem = system;
+        Debug.Log("Positioning system set to: " + system.name);
+    }
+
+    public void StartNavigation(string storeId, string storeName, Vector3 destination)
+    {
+        if (isNavigating)
+        {
+            StopNavigation(false);
+        }
+        
+        this.destination = destination;
+        this.currentNavigationStoreId = storeId;
+        this.currentNavigationStoreName = storeName;
+        
+        // Place destination marker
+        PlaceDestinationMarker(destination);
+        
+        // Calculate initial path
+        Vector3 startPosition = GetCurrentPosition();
+        CalculatePath(startPosition, destination);
+        
+        // Start path updates
+        if (pathUpdateCoroutine != null)
+        {
+            StopCoroutine(pathUpdateCoroutine);
+        }
+        pathUpdateCoroutine = StartCoroutine(UpdatePathRoutine());
+        
+        isNavigating = true;
+        divineLineVisibleStartTime = Time.time;
+        isDivineLineVisible = true;
+        
+        // Trigger analytics event
+        OnNavigationStarted?.Invoke(storeId, storeName, startPosition, destination);
+        
+        Debug.Log($"Started navigation to {storeName} (ID: {storeId})");
+    }
+
+    public void StopNavigation(bool completed)
+    {
+        if (!isNavigating) return;
+        
+        // Clean up path visualization
+        if (pathRenderer)
+        {
+            pathRenderer.ClearPath();
+        }
+        
         // Clean up markers
         if (destinationMarker) Destroy(destinationMarker);
         foreach (var marker in waypointMarkers)
@@ -105,12 +195,42 @@ public class ARNavigationManager : MonoBehaviour
             if (marker) Destroy(marker);
         }
         waypointMarkers.Clear();
-
-        // Clear divine line
-        if (pathRenderer)
+        
+        // Stop path updates
+        if (pathUpdateCoroutine != null)
         {
-            pathRenderer.ClearPath();
+            StopCoroutine(pathUpdateCoroutine);
+            pathUpdateCoroutine = null;
         }
+        
+        float distanceToTarget = 0f;
+        if (completed)
+        {
+            distanceToTarget = 0f;
+        }
+        else
+        {
+            Vector3 currentPos = GetCurrentPosition();
+            distanceToTarget = Vector3.Distance(currentPos, destination);
+        }
+        
+        // Track divine line visibility duration
+        if (isDivineLineVisible)
+        {
+            float visibilityDuration = Time.time - divineLineVisibleStartTime;
+            OnDivineLineVisibilityChanged?.Invoke(false, visibilityDuration, currentNavigationStoreId);
+            isDivineLineVisible = false;
+        }
+        
+        isNavigating = false;
+        
+        // Trigger analytics event
+        OnNavigationEnded?.Invoke(currentNavigationStoreId, completed, distanceToTarget);
+        
+        currentNavigationStoreId = "";
+        currentNavigationStoreName = "";
+        
+        Debug.Log("Navigation stopped");
     }
 
     private void CalculatePath(Vector3 start, Vector3 end)
@@ -141,6 +261,15 @@ public class ARNavigationManager : MonoBehaviour
         }
 
         currentPath.Add(end);
+
+        // Update divine line
+        if (pathRenderer)
+        {
+            pathRenderer.UpdatePath(currentPath.ToArray());
+        }
+
+        // Update waypoint markers
+        UpdateWaypointMarkers();
     }
 
     private void UpdatePath()
@@ -246,5 +375,75 @@ public class ARNavigationManager : MonoBehaviour
         }
 
         return destination;
+    }
+
+    private IEnumerator UpdatePathRoutine()
+    {
+        while (isNavigating)
+        {
+            yield return new WaitForSeconds(pathUpdateInterval);
+            
+            Vector3 currentPosition = GetCurrentPosition();
+            CalculatePath(currentPosition, destination);
+            
+            // Check if we've reached the destination
+            float distanceToDestination = Vector3.Distance(currentPosition, destination);
+            if (distanceToDestination < 1.0f)
+            {
+                StopNavigation(true);
+                yield break;
+            }
+        }
+    }
+
+    private Vector3 GetCurrentPosition()
+    {
+        if (positioningSystem != null && positioningSystem.IsTracking())
+        {
+            // Use indoor positioning when available
+            return positioningSystem.GetCurrentPosition();
+        }
+        else if (arCamera != null)
+        {
+            // Fallback to camera position
+            return new Vector3(arCamera.transform.position.x, 0, arCamera.transform.position.z);
+        }
+        
+        return Vector3.zero;
+    }
+
+    private void PlaceDestinationMarker(Vector3 position)
+    {
+        if (destinationMarkerPrefab != null)
+        {
+            if (destinationMarker != null)
+            {
+                Destroy(destinationMarker);
+            }
+            
+            Vector3 groundPosition = RaycastToGround(position);
+            destinationMarker = Instantiate(destinationMarkerPrefab, groundPosition, Quaternion.identity);
+            destinationMarker.transform.SetParent(transform);
+        }
+    }
+
+    private void UpdateWaypointMarkers()
+    {
+        if (waypointMarkerPrefab == null) return;
+        
+        // Clean up existing markers
+        foreach (var marker in waypointMarkers)
+        {
+            Destroy(marker);
+        }
+        waypointMarkers.Clear();
+        
+        // Only place waypoint markers at intervals
+        for (int i = 1; i < currentPath.Count - 1; i += 3)
+        {
+            GameObject marker = Instantiate(waypointMarkerPrefab, currentPath[i], Quaternion.identity);
+            marker.transform.SetParent(transform);
+            waypointMarkers.Add(marker);
+        }
     }
 } 
