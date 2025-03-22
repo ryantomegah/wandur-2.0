@@ -1,9 +1,10 @@
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.EventSystems;
 using TMPro;
 using System;
 
-public class StoreListItem : MonoBehaviour
+public class StoreListItem : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler, IPointerDownHandler, IPointerUpHandler
 {
     [Header("UI Elements")]
     [SerializeField] private TextMeshProUGUI storeNameText;
@@ -35,11 +36,20 @@ public class StoreListItem : MonoBehaviour
     [SerializeField] private Color normalColor = new Color(1.0f, 1.0f, 1.0f);
     [SerializeField] private Color adBackgroundColor = new Color(1.0f, 0.9f, 0.2f, 1.0f);
     [SerializeField] private Color loyaltyColor = new Color(0.4f, 0.4f, 1.0f, 1.0f);
+    [SerializeField] private Sprite defaultStoreImage;
+    
+    [Header("Animation")]
+    [SerializeField] private bool useAnimations = true;
+    [SerializeField] private float loadInDelay = 0.05f;
+    [SerializeField] private float animationDuration = 0.2f;
     
     // Store data
     private StoreData storeData;
     private bool isSelected = false;
     private bool hasActiveAd = false;
+    private RectTransform rectTransform;
+    private UIAnimationController animationController;
+    private CanvasGroup canvasGroup;
     
     // Event for click handling
     public event Action OnItemClicked;
@@ -47,16 +57,39 @@ public class StoreListItem : MonoBehaviour
     
     private void Awake()
     {
-        // Add click listener
+        // Get references
+        rectTransform = GetComponent<RectTransform>();
+        canvasGroup = GetComponent<CanvasGroup>();
+        if (canvasGroup == null)
+        {
+            canvasGroup = gameObject.AddComponent<CanvasGroup>();
+        }
+        
+        // Find animation controller
+        animationController = FindObjectOfType<UIAnimationController>();
+        
+        // Add click listeners
         if (itemButton != null)
         {
             itemButton.onClick.AddListener(HandleClick);
         }
         
-        // Add ad claim button listener
         if (adClaimButton != null)
         {
             adClaimButton.onClick.AddListener(HandleAdClaimClick);
+        }
+        
+        // Initialize animations
+        if (useAnimations)
+        {
+            // Start invisible
+            canvasGroup.alpha = 0;
+            // Slightly scaled down
+            rectTransform.localScale = new Vector3(0.95f, 0.95f, 1f);
+            // Animate in after delay based on hierarchy index
+            int siblingIndex = transform.GetSiblingIndex();
+            float delay = loadInDelay * siblingIndex;
+            StartCoroutine(AnimateIn(delay));
         }
     }
     
@@ -94,8 +127,12 @@ public class StoreListItem : MonoBehaviour
             if (storeSprite != null)
             {
                 storeImage.sprite = storeSprite;
-                storeImage.preserveAspect = true;
             }
+            else if (defaultStoreImage != null)
+            {
+                storeImage.sprite = defaultStoreImage;
+            }
+            storeImage.preserveAspect = true;
         }
         
         // Update open status
@@ -122,31 +159,49 @@ public class StoreListItem : MonoBehaviour
     
     private void UpdateGamificationElements()
     {
-        // Loyalty badge (simulated data for now)
+        // Loyalty badge
         if (loyaltyBadge != null && loyaltyPointsText != null)
         {
-            // Determine if we should show loyalty points
-            bool showLoyaltyBadge = UnityEngine.Random.value > 0.3f; // 70% chance to show for demo
+            bool showLoyaltyBadge = storeData.availableLoyaltyPoints > 0;
             loyaltyBadge.SetActive(showLoyaltyBadge);
             
             if (showLoyaltyBadge)
             {
-                int points = UnityEngine.Random.Range(50, 200);
-                loyaltyPointsText.text = $"+{points} pts";
+                loyaltyPointsText.text = $"+{storeData.availableLoyaltyPoints} pts";
+                
+                // Animate loyalty badge if it's significant
+                if (useAnimations && animationController != null && storeData.availableLoyaltyPoints > 100)
+                {
+                    RectTransform badgeRect = loyaltyBadge.GetComponent<RectTransform>();
+                    if (badgeRect != null)
+                    {
+                        animationController.AnimateBadgePulse(badgeRect);
+                    }
+                }
             }
         }
         
-        // First visit badge (would be based on user data)
+        // First visit badge
         if (firstVisitBadge != null)
         {
-            bool isFirstTimeVisit = UnityEngine.Random.value > 0.7f; // 30% chance for demo
+            bool isFirstTimeVisit = !storeData.hasVisited && storeData.visitCount == 0;
             firstVisitBadge.SetActive(isFirstTimeVisit);
+            
+            // Animate first visit badge
+            if (useAnimations && animationController != null && isFirstTimeVisit)
+            {
+                RectTransform badgeRect = firstVisitBadge.GetComponent<RectTransform>();
+                if (badgeRect != null)
+                {
+                    animationController.AnimateBadgePulse(badgeRect);
+                }
+            }
         }
         
-        // Achievement icon (would be based on user achievements)
+        // Achievement icon (if store has achievements)
         if (achievementIcon != null)
         {
-            bool hasAchievement = UnityEngine.Random.value > 0.8f; // 20% chance for demo
+            bool hasAchievement = storeData.achievements != null && storeData.achievements.Length > 0;
             achievementIcon.SetActive(hasAchievement);
         }
     }
@@ -155,32 +210,42 @@ public class StoreListItem : MonoBehaviour
     {
         if (adBanner != null && adText != null)
         {
-            // Determine if we should show an ad (would come from geofencing system)
-            hasActiveAd = UnityEngine.Random.value > 0.7f; // 30% chance to show ad for demo
+            // Show ad banner if store has active promotion
+            hasActiveAd = storeData.HasActivePromotion();
             adBanner.SetActive(hasActiveAd);
             
-            if (hasActiveAd)
+            if (hasActiveAd && storeData.activePromotion != null)
             {
-                // Example ad texts
-                string[] adTexts = new string[] {
-                    "20% OFF Today!",
-                    "Buy 1 Get 1 Free",
-                    "Flash Sale Now!",
-                    "Limited Time Offer"
-                };
+                adText.text = storeData.activePromotion.title;
                 
-                adText.text = adTexts[UnityEngine.Random.Range(0, adTexts.Length)];
+                // Animate ad banner
+                if (useAnimations && animationController != null)
+                {
+                    RectTransform bannerRect = adBanner.GetComponent<RectTransform>();
+                    if (bannerRect != null)
+                    {
+                        animationController.AnimateBadgePulse(bannerRect, 1);
+                    }
+                }
             }
         }
     }
     
     public void SetSelected(bool selected)
     {
+        if (selected == isSelected) return;
+        
         isSelected = selected;
         
         if (backgroundImage != null)
         {
             backgroundImage.color = isSelected ? selectedColor : normalColor;
+        }
+        
+        // Animate selection if animation controller is available
+        if (useAnimations && animationController != null)
+        {
+            animationController.AnimateCardSelect(rectTransform, isSelected);
         }
     }
     
@@ -195,14 +260,55 @@ public class StoreListItem : MonoBehaviour
         Debug.Log($"Ad claimed for store: {storeData.name}");
         OnAdClaimClicked?.Invoke();
         
-        // Could track metrics here
-        if (adBanner != null)
+        // Animate ad claim
+        if (adBanner != null && adText != null)
         {
-            // Potentially update UI to show claimed state
-            if (adText != null)
+            adText.text = "Claimed!";
+            
+            if (useAnimations && animationController != null)
             {
-                adText.text = "Claimed!";
+                RectTransform bannerRect = adBanner.GetComponent<RectTransform>();
+                if (bannerRect != null)
+                {
+                    animationController.AnimateBadgePulse(bannerRect, 2);
+                }
             }
+        }
+    }
+    
+    // IPointerEnterHandler implementation
+    public void OnPointerEnter(PointerEventData eventData)
+    {
+        if (!isSelected && useAnimations && animationController != null)
+        {
+            animationController.AnimateCardHover(rectTransform, true);
+        }
+    }
+    
+    // IPointerExitHandler implementation
+    public void OnPointerExit(PointerEventData eventData)
+    {
+        if (!isSelected && useAnimations && animationController != null)
+        {
+            animationController.AnimateCardHover(rectTransform, false);
+        }
+    }
+    
+    // IPointerDownHandler implementation
+    public void OnPointerDown(PointerEventData eventData)
+    {
+        if (useAnimations && animationController != null)
+        {
+            animationController.AnimateCardPress(rectTransform, true);
+        }
+    }
+    
+    // IPointerUpHandler implementation
+    public void OnPointerUp(PointerEventData eventData)
+    {
+        if (useAnimations && animationController != null)
+        {
+            animationController.AnimateCardPress(rectTransform, false);
         }
     }
     
@@ -233,6 +339,37 @@ public class StoreListItem : MonoBehaviour
                 loyaltyPointsText.text = $"+{points} pts";
             }
         }
+    }
+    
+    // Animation coroutine for card appearance
+    private System.Collections.IEnumerator AnimateIn(float delay)
+    {
+        // Wait for delay
+        yield return new WaitForSeconds(delay);
+        
+        // Animate in
+        float time = 0;
+        while (time < animationDuration)
+        {
+            time += Time.deltaTime;
+            float t = time / animationDuration;
+            
+            // Ease in quad
+            float easeT = t * t;
+            
+            canvasGroup.alpha = easeT;
+            rectTransform.localScale = Vector3.Lerp(
+                new Vector3(0.95f, 0.95f, 1f),
+                Vector3.one,
+                easeT
+            );
+            
+            yield return null;
+        }
+        
+        // Ensure final state
+        canvasGroup.alpha = 1;
+        rectTransform.localScale = Vector3.one;
     }
     
     private void OnDestroy()

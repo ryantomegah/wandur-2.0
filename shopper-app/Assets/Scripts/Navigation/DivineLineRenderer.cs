@@ -1,243 +1,264 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
-public class DivineLineRenderer : MonoBehaviour
+namespace Wandur.Navigation
 {
-    [Header("Path Settings")]
-    [SerializeField] private float lineWidth = 0.15f;
-    [SerializeField] private float lineHeight = 0.05f;
-    [SerializeField] private float smoothness = 0.1f;
-    [SerializeField] private bool useWorldSpace = true;
-
-    [Header("Visual Effects")]
-    [SerializeField] private float pulseSpeed = 1f;
-    [SerializeField] private float pulseScale = 0.2f;
-    [SerializeField] private float flowSpeed = 1f;
-    [SerializeField] private float glowIntensity = 1.5f;
-
-    private Material lineMaterial;
-    private MeshFilter meshFilter;
-    private MeshRenderer meshRenderer;
-    private List<Vector3> pathPoints = new List<Vector3>();
-    private List<Vector3> vertices = new List<Vector3>();
-    private List<int> triangles = new List<int>();
-    private List<Vector2> uvs = new List<Vector2>();
-    private List<Vector3> normals = new List<Vector3>();
-    private float totalPathLength;
-
-    private void Awake()
+    [RequireComponent(typeof(LineRenderer))]
+    public class DivineLineRenderer : MonoBehaviour
     {
-        meshFilter = GetComponent<MeshFilter>();
-        meshRenderer = GetComponent<MeshRenderer>();
-    }
+        [Header("Line Settings")]
+        [SerializeField] private Material divineLineMaterial;
+        [SerializeField] private float lineWidth = 0.15f;
+        [SerializeField] private float lineHeight = 0.1f; // Height above ground
+        [SerializeField] private float yOffset = 0.05f;   // Small offset to prevent Z-fighting with floor
 
-    public void Initialize(Material material, float width, float height, Color color)
-    {
-        lineMaterial = new Material(material);
-        lineMaterial.color = color;
-        meshRenderer.material = lineMaterial;
-        lineWidth = width;
-        lineHeight = height;
-
-        // Set shader properties
-        lineMaterial.SetFloat("_GlowIntensity", glowIntensity);
-        lineMaterial.SetFloat("_PulseSpeed", pulseSpeed);
-        lineMaterial.SetFloat("_PulseScale", pulseScale);
-        lineMaterial.SetFloat("_FlowSpeed", flowSpeed);
-    }
-
-    public void UpdatePath(Vector3[] points)
-    {
-        if (points == null || points.Length < 2) return;
-
-        pathPoints.Clear();
+        [Header("Effect Settings")]
+        [SerializeField] private Color mainColor = new Color(0.5f, 0.8f, 1.0f, 0.8f);
+        [SerializeField] private Color secondaryColor = new Color(0.3f, 0.6f, 1.0f, 0.6f);
+        [SerializeField] private float glowIntensity = 1.5f;
+        [SerializeField] private float flowSpeed = 1.0f;
+        [SerializeField] private float pulseSpeed = 1.0f;
+        [SerializeField] private float pulseScale = 0.2f;
+        [SerializeField] private float edgeSoftness = 0.1f;
         
-        // Generate smooth path using Catmull-Rom spline
-        if (points.Length > 3)
+        [Header("Enhanced Effects")]
+        [SerializeField] private Texture2D noiseTexture;
+        [SerializeField] private float noiseScale = 2.0f;
+        [SerializeField] private float noiseStrength = 0.2f;
+        [SerializeField] private float shimmerSpeed = 2.0f;
+        [SerializeField] private float shimmerStrength = 0.3f;
+        [SerializeField] private float proximityGlow = 1.0f;
+        [SerializeField] private bool responsiveGlow = true;
+        
+        [Header("Particle System")]
+        [SerializeField] private bool useParticles = true;
+        [SerializeField] private GameObject particleSystemPrefab;
+        [SerializeField] private float particleSpawnInterval = 0.3f;
+        
+        // Private variables
+        private LineRenderer lineRenderer;
+        private List<Vector3> waypoints = new List<Vector3>();
+        private DivineLineParticleSystem particleSystem;
+        private float particleTimer = 0f;
+        private float totalPathLength = 0f;
+        private Transform destination;
+        private float distanceToDestination = 0f;
+        private MaterialPropertyBlock propBlock;
+        
+        private int mainColorID;
+        private int secondaryColorID;
+        private int glowIntensityID;
+        private int flowSpeedID;
+        private int pulseSpeedID;
+        private int pulseScaleID;
+        private int edgeSoftnessID;
+        private int pathLengthID;
+        private int detailNoiseTexID;
+        private int noiseScaleID;
+        private int noiseStrengthID;
+        private int shimmerSpeedID;
+        private int shimmerStrengthID;
+        private int proximityGlowID;
+        private int distanceFromEndID;
+        private int responsiveGlowID;
+
+        private void Awake()
         {
-            for (float t = 0; t <= 1; t += smoothness)
+            lineRenderer = GetComponent<LineRenderer>();
+            
+            if (divineLineMaterial != null)
             {
-                pathPoints.Add(CatmullRomSpline(points, t));
+                lineRenderer.material = divineLineMaterial;
             }
-        }
-        else
-        {
-            pathPoints.AddRange(points);
-        }
-
-        GenerateMesh();
-        UpdateMaterialProperties();
-    }
-
-    public void ClearPath()
-    {
-        pathPoints.Clear();
-        vertices.Clear();
-        triangles.Clear();
-        uvs.Clear();
-        normals.Clear();
-
-        if (meshFilter.mesh != null)
-        {
-            meshFilter.mesh.Clear();
-        }
-    }
-
-    private void GenerateMesh()
-    {
-        if (pathPoints.Count < 2) return;
-
-        vertices.Clear();
-        triangles.Clear();
-        uvs.Clear();
-        normals.Clear();
-        totalPathLength = 0;
-
-        // Calculate total path length for UV mapping
-        for (int i = 0; i < pathPoints.Count - 1; i++)
-        {
-            totalPathLength += Vector3.Distance(pathPoints[i], pathPoints[i + 1]);
-        }
-
-        float currentLength = 0;
-        Vector3 lastRight = Vector3.zero;
-
-        for (int i = 0; i < pathPoints.Count; i++)
-        {
-            Vector3 forward;
-            if (i < pathPoints.Count - 1)
+            
+            // Create material property block for efficient updates
+            propBlock = new MaterialPropertyBlock();
+            
+            // Cache shader property IDs
+            mainColorID = Shader.PropertyToID("_MainColor");
+            secondaryColorID = Shader.PropertyToID("_SecondaryColor");
+            glowIntensityID = Shader.PropertyToID("_GlowIntensity");
+            flowSpeedID = Shader.PropertyToID("_FlowSpeed");
+            pulseSpeedID = Shader.PropertyToID("_PulseSpeed");
+            pulseScaleID = Shader.PropertyToID("_PulseScale");
+            edgeSoftnessID = Shader.PropertyToID("_EdgeSoftness");
+            pathLengthID = Shader.PropertyToID("_PathLength");
+            detailNoiseTexID = Shader.PropertyToID("_DetailNoiseTex");
+            noiseScaleID = Shader.PropertyToID("_NoiseScale");
+            noiseStrengthID = Shader.PropertyToID("_NoiseStrength");
+            shimmerSpeedID = Shader.PropertyToID("_ShimmerSpeed");
+            shimmerStrengthID = Shader.PropertyToID("_ShimmerStrength");
+            proximityGlowID = Shader.PropertyToID("_ProximityGlow");
+            distanceFromEndID = Shader.PropertyToID("_DistanceFromEnd");
+            responsiveGlowID = Shader.PropertyToID("_ResponsiveGlow");
+            
+            // Initialize line settings
+            lineRenderer.startWidth = lineWidth;
+            lineRenderer.endWidth = lineWidth;
+            lineRenderer.positionCount = 0;
+            
+            // Initialize the particle system if enabled
+            if (useParticles && particleSystemPrefab != null)
             {
-                forward = (pathPoints[i + 1] - pathPoints[i]).normalized;
-            }
-            else
-            {
-                forward = (pathPoints[i] - pathPoints[i - 1]).normalized;
-            }
-
-            // Calculate right vector
-            Vector3 up = Vector3.up;
-            Vector3 right = Vector3.Cross(forward, up).normalized;
-
-            // Handle path twisting
-            if (i > 0)
-            {
-                float dot = Vector3.Dot(right, lastRight);
-                if (dot < 0)
+                var particleSystemObj = Instantiate(particleSystemPrefab, transform);
+                particleSystem = particleSystemObj.GetComponent<DivineLineParticleSystem>();
+                if (particleSystem == null)
                 {
-                    right = -right;
+                    Debug.LogWarning("Particle system prefab does not contain a DivineLineParticleSystem component.");
                 }
             }
-            lastRight = right;
-
-            // Create vertices
-            Vector3 position = pathPoints[i];
-            vertices.Add(position + right * lineWidth * 0.5f + up * lineHeight); // Top right
-            vertices.Add(position - right * lineWidth * 0.5f + up * lineHeight); // Top left
-            vertices.Add(position + right * lineWidth * 0.5f); // Bottom right
-            vertices.Add(position - right * lineWidth * 0.5f); // Bottom left
-
-            // Calculate UV coordinates
-            if (i > 0)
-            {
-                currentLength += Vector3.Distance(pathPoints[i], pathPoints[i - 1]);
-            }
-            float uvY = currentLength / totalPathLength;
-
-            uvs.Add(new Vector2(1, uvY)); // Top right
-            uvs.Add(new Vector2(0, uvY)); // Top left
-            uvs.Add(new Vector2(1, uvY)); // Bottom right
-            uvs.Add(new Vector2(0, uvY)); // Bottom left
-
-            // Add normal vectors
-            Vector3 normal = Vector3.Cross(right, forward).normalized;
-            normals.Add(normal);
-            normals.Add(normal);
-            normals.Add(normal);
-            normals.Add(normal);
-
-            // Create triangles
-            if (i < pathPoints.Count - 1)
-            {
-                int baseIndex = i * 4;
-                // Top face
-                triangles.Add(baseIndex);
-                triangles.Add(baseIndex + 4);
-                triangles.Add(baseIndex + 1);
-                triangles.Add(baseIndex + 1);
-                triangles.Add(baseIndex + 4);
-                triangles.Add(baseIndex + 5);
-
-                // Right face
-                triangles.Add(baseIndex);
-                triangles.Add(baseIndex + 2);
-                triangles.Add(baseIndex + 4);
-                triangles.Add(baseIndex + 2);
-                triangles.Add(baseIndex + 6);
-                triangles.Add(baseIndex + 4);
-
-                // Left face
-                triangles.Add(baseIndex + 1);
-                triangles.Add(baseIndex + 5);
-                triangles.Add(baseIndex + 3);
-                triangles.Add(baseIndex + 3);
-                triangles.Add(baseIndex + 5);
-                triangles.Add(baseIndex + 7);
-
-                // Bottom face
-                triangles.Add(baseIndex + 2);
-                triangles.Add(baseIndex + 3);
-                triangles.Add(baseIndex + 6);
-                triangles.Add(baseIndex + 3);
-                triangles.Add(baseIndex + 7);
-                triangles.Add(baseIndex + 6);
-            }
+            
+            UpdateMaterialProperties();
         }
 
-        // Update mesh
-        Mesh mesh = new Mesh();
-        mesh.vertices = vertices.ToArray();
-        mesh.triangles = triangles.ToArray();
-        mesh.uv = uvs.ToArray();
-        mesh.normals = normals.ToArray();
-        mesh.RecalculateBounds();
-
-        meshFilter.mesh = mesh;
-    }
-
-    private void UpdateMaterialProperties()
-    {
-        if (lineMaterial != null)
+        private void Update()
         {
-            lineMaterial.SetFloat("_PathLength", totalPathLength);
-            lineMaterial.SetFloat("_Time", Time.time);
+            // Update distance to destination for responsive glow
+            if (responsiveGlow && destination != null)
+            {
+                Vector3 playerPos = Camera.main.transform.position;
+                distanceToDestination = Vector3.Distance(playerPos, destination.position);
+                lineRenderer.GetPropertyBlock(propBlock);
+                propBlock.SetFloat(distanceFromEndID, distanceToDestination);
+                lineRenderer.SetPropertyBlock(propBlock);
+            }
+            
+            // Handle particles
+            if (useParticles && particleSystem != null && waypoints.Count > 1)
+            {
+                particleTimer += Time.deltaTime;
+                if (particleTimer >= particleSpawnInterval)
+                {
+                    particleSystem.EmitParticles();
+                    particleTimer = 0f;
+                }
+            }
         }
-    }
-
-    private Vector3 CatmullRomSpline(Vector3[] points, float t)
-    {
-        int numSections = points.Length - 3;
-        int currentSection = Mathf.Min(Mathf.FloorToInt(t * numSections), numSections - 1);
-        float u = t * numSections - currentSection;
-
-        Vector3 p0 = points[currentSection];
-        Vector3 p1 = points[currentSection + 1];
-        Vector3 p2 = points[currentSection + 2];
-        Vector3 p3 = points[currentSection + 3];
-
-        return 0.5f * (
-            (-p0 + 3f * p1 - 3f * p2 + p3) * (u * u * u) +
-            (2f * p0 - 5f * p1 + 4f * p2 - p3) * (u * u) +
-            (-p0 + p2) * u +
-            2f * p1
-        );
-    }
-
-    private void OnDestroy()
-    {
-        if (lineMaterial != null)
+        
+        public void SetWaypoints(List<Vector3> newWaypoints, Transform destinationTransform = null)
         {
-            Destroy(lineMaterial);
+            waypoints.Clear();
+            
+            if (newWaypoints == null || newWaypoints.Count == 0)
+            {
+                lineRenderer.positionCount = 0;
+                return;
+            }
+            
+            // Store waypoints
+            foreach (var point in newWaypoints)
+            {
+                // Apply height offset to keep line above ground
+                Vector3 adjustedPoint = point + new Vector3(0, lineHeight + yOffset, 0);
+                waypoints.Add(adjustedPoint);
+            }
+            
+            // Set line renderer positions
+            lineRenderer.positionCount = waypoints.Count;
+            lineRenderer.SetPositions(waypoints.ToArray());
+            
+            // Calculate total path length for flow effect scaling
+            CalculatePathLength();
+            
+            // Store destination transform for distance calculations
+            destination = destinationTransform;
+            if (destination != null)
+            {
+                distanceToDestination = Vector3.Distance(
+                    Camera.main != null ? Camera.main.transform.position : transform.position, 
+                    destination.position
+                );
+            }
+            
+            // Update material properties
+            UpdateMaterialProperties();
+            
+            // Update particle system
+            if (useParticles && particleSystem != null)
+            {
+                particleSystem.UpdatePathPoints(waypoints);
+            }
+        }
+        
+        private void CalculatePathLength()
+        {
+            totalPathLength = 0f;
+            for (int i = 1; i < waypoints.Count; i++)
+            {
+                totalPathLength += Vector3.Distance(waypoints[i-1], waypoints[i]);
+            }
+            
+            // Normalize to a reasonable range for shader
+            totalPathLength = Mathf.Clamp(totalPathLength * 0.1f, 1f, 100f);
+        }
+        
+        private void UpdateMaterialProperties()
+        {
+            lineRenderer.GetPropertyBlock(propBlock);
+            
+            propBlock.SetColor(mainColorID, mainColor);
+            propBlock.SetColor(secondaryColorID, secondaryColor);
+            propBlock.SetFloat(glowIntensityID, glowIntensity);
+            propBlock.SetFloat(flowSpeedID, flowSpeed);
+            propBlock.SetFloat(pulseSpeedID, pulseSpeed);
+            propBlock.SetFloat(pulseScaleID, pulseScale);
+            propBlock.SetFloat(edgeSoftnessID, edgeSoftness);
+            propBlock.SetFloat(pathLengthID, totalPathLength);
+            
+            // Enhanced properties
+            if (noiseTexture != null)
+            {
+                propBlock.SetTexture(detailNoiseTexID, noiseTexture);
+            }
+            propBlock.SetFloat(noiseScaleID, noiseScale);
+            propBlock.SetFloat(noiseStrengthID, noiseStrength);
+            propBlock.SetFloat(shimmerSpeedID, shimmerSpeed);
+            propBlock.SetFloat(shimmerStrengthID, shimmerStrength);
+            propBlock.SetFloat(proximityGlowID, proximityGlow);
+            propBlock.SetFloat(distanceFromEndID, distanceToDestination);
+            propBlock.SetFloat(responsiveGlowID, responsiveGlow ? 1.0f : 0.0f);
+            
+            lineRenderer.SetPropertyBlock(propBlock);
+        }
+        
+        public void SetColor(Color primary, Color secondary)
+        {
+            mainColor = primary;
+            secondaryColor = secondary;
+            UpdateMaterialProperties();
+        }
+        
+        public void SetGlowIntensity(float intensity)
+        {
+            glowIntensity = intensity;
+            UpdateMaterialProperties();
+        }
+        
+        public void Hide()
+        {
+            lineRenderer.enabled = false;
+            if (useParticles && particleSystem != null)
+            {
+                particleSystem.gameObject.SetActive(false);
+            }
+        }
+        
+        public void Show()
+        {
+            lineRenderer.enabled = true;
+            if (useParticles && particleSystem != null)
+            {
+                particleSystem.gameObject.SetActive(true);
+            }
+        }
+        
+        public void OnDestroy()
+        {
+            // Clean up resources
+            if (useParticles && particleSystem != null)
+            {
+                Destroy(particleSystem.gameObject);
+            }
         }
     }
 } 

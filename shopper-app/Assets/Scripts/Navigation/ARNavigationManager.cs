@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System;
 using System.Collections;
+using Wandur.Navigation;
 
 [RequireComponent(typeof(ARRaycastManager))]
 public class ARNavigationManager : MonoBehaviour
@@ -27,9 +28,13 @@ public class ARNavigationManager : MonoBehaviour
     [SerializeField] private float pathWidth = 0.15f;
     [SerializeField] private float pathHeight = 0.05f;
     [SerializeField] private Color pathColor = new Color(0.5f, 0.8f, 1f, 0.8f);
+    [SerializeField] private Texture2D noiseTexture;
+    [SerializeField] private GameObject particleSystemPrefab;
+    [SerializeField] private Gradient colorGradient;
 
     private List<Vector3> currentPath = new List<Vector3>();
-    private GameObject destinationMarker;
+    private GameObject destinationMarkerObject;
+    private DestinationMarker destinationMarker;
     private List<GameObject> waypointMarkers = new List<GameObject>();
     private bool isNavigating = false;
     private Vector3 destination;
@@ -44,9 +49,20 @@ public class ARNavigationManager : MonoBehaviour
     public event Action<string, string, Vector3, Vector3> OnNavigationStarted;
     public event Action<string, bool, float> OnNavigationEnded;
     public event Action<bool, float, string> OnDivineLineVisibilityChanged;
+    public event Action<float> OnWaypointReached;
+    public event Action<float> OnCloseToDestination;
 
     // Positioning system reference
     private OriientSDKManager positioningSystem;
+    
+    // Distance thresholds
+    private const float CLOSE_TO_DESTINATION_THRESHOLD = 5.0f; // meters
+    private const float DESTINATION_REACHED_THRESHOLD = 1.5f; // meters
+    private const float WAYPOINT_REACHED_THRESHOLD = 2.0f; // meters
+    
+    // State tracking
+    private bool hasNotifiedCloseToDestination = false;
+    private int lastReachedWaypointIndex = -1;
 
     private void Awake()
     {
@@ -57,7 +73,30 @@ public class ARNavigationManager : MonoBehaviour
         // Initialize path renderer
         if (pathRenderer)
         {
-            pathRenderer.Initialize(divineMaterial, pathWidth, pathHeight, pathColor);
+            InitializeDivineLine();
+        }
+    }
+    
+    private void InitializeDivineLine()
+    {
+        // Configure material properties if needed
+        if (divineMaterial != null)
+        {
+            // Set noise texture if available
+            if (noiseTexture != null)
+            {
+                divineMaterial.SetTexture("_DetailNoiseTex", noiseTexture);
+            }
+        }
+        
+        if (pathRenderer != null)
+        {
+            // Configure enhanced settings
+            if (particleSystemPrefab != null)
+            {
+                pathRenderer.useParticles = true;
+                pathRenderer.particleSystemPrefab = particleSystemPrefab;
+            }
         }
     }
 
@@ -80,12 +119,113 @@ public class ARNavigationManager : MonoBehaviour
             UpdatePath();
             lastPathUpdateTime = Time.time;
         }
-
-        // Update divine line effect
-        if (pathRenderer && currentPath.Count > 0)
+        
+        // Check proximity to destination
+        CheckDestinationProximity();
+        
+        // Check if waypoints have been reached
+        CheckWaypointProgress();
+    }
+    
+    private void CheckDestinationProximity()
+    {
+        if (!isNavigating) return;
+        
+        Vector3 currentPosition = GetCurrentPosition();
+        float distanceToDestination = Vector3.Distance(currentPosition, destination);
+        
+        // Update shader parameter for proximity glow
+        if (pathRenderer != null)
         {
-            pathRenderer.UpdatePath(currentPath.ToArray());
+            // This will be used by the shader for responsive effects
+            pathRenderer.SetWaypoints(currentPath, null);
         }
+        
+        // Check if close to destination but not yet notified
+        if (!hasNotifiedCloseToDestination && distanceToDestination <= CLOSE_TO_DESTINATION_THRESHOLD)
+        {
+            OnCloseToDestination?.Invoke(distanceToDestination);
+            hasNotifiedCloseToDestination = true;
+            
+            // Increase visual intensity near destination
+            if (pathRenderer != null)
+            {
+                pathRenderer.SetGlowIntensity(2.0f);
+            }
+        }
+        
+        // Check if destination reached
+        if (distanceToDestination <= DESTINATION_REACHED_THRESHOLD)
+        {
+            StopNavigation(true);
+        }
+    }
+    
+    private void CheckWaypointProgress()
+    {
+        if (!isNavigating || currentPath.Count <= 2) return;
+        
+        Vector3 currentPosition = GetCurrentPosition();
+        
+        // Skip the first point (current position) and check intermediate waypoints
+        for (int i = 1; i < currentPath.Count - 1; i++)
+        {
+            if (i <= lastReachedWaypointIndex) continue;
+            
+            float distanceToWaypoint = Vector3.Distance(currentPosition, currentPath[i]);
+            if (distanceToWaypoint <= WAYPOINT_REACHED_THRESHOLD)
+            {
+                OnWaypointReached?.Invoke(distanceToWaypoint);
+                lastReachedWaypointIndex = i;
+                
+                // Pulse effect at the waypoint
+                PulseWaypointEffect(currentPath[i]);
+                
+                break;
+            }
+        }
+    }
+    
+    private void PulseWaypointEffect(Vector3 position)
+    {
+        // Create a temporary visual effect at the waypoint
+        if (waypointMarkerPrefab != null)
+        {
+            GameObject pulseEffect = Instantiate(waypointMarkerPrefab, position, Quaternion.identity);
+            
+            // Animate and destroy
+            StartCoroutine(AnimateAndDestroyWaypointPulse(pulseEffect));
+        }
+    }
+    
+    private IEnumerator AnimateAndDestroyWaypointPulse(GameObject pulseObject)
+    {
+        // Simple scale animation
+        float duration = 1.0f;
+        float startTime = Time.time;
+        Vector3 startScale = Vector3.one * 0.5f;
+        Vector3 endScale = Vector3.one * 2.0f;
+        
+        pulseObject.transform.localScale = startScale;
+        
+        while (Time.time < startTime + duration)
+        {
+            float t = (Time.time - startTime) / duration;
+            pulseObject.transform.localScale = Vector3.Lerp(startScale, endScale, t);
+            
+            // Fade out
+            Renderer renderer = pulseObject.GetComponent<Renderer>();
+            if (renderer != null)
+            {
+                Color color = renderer.material.color;
+                color.a = 1 - t;
+                renderer.material.color = color;
+            }
+            
+            yield return null;
+        }
+        
+        Destroy(pulseObject);
     }
 
     public void Initialize(ARSession session, Camera camera)
@@ -111,10 +251,7 @@ public class ARNavigationManager : MonoBehaviour
         }
         
         // Initialize divine line renderer
-        if (pathRenderer != null && divineMaterial != null)
-        {
-            pathRenderer.Initialize(divineMaterial, pathWidth, pathHeight, pathColor);
-        }
+        InitializeDivineLine();
         
         Debug.Log("AR Navigation Manager initialized");
     }
@@ -129,10 +266,7 @@ public class ARNavigationManager : MonoBehaviour
         planeManager = null;
         
         // Initialize divine line renderer
-        if (pathRenderer != null && divineMaterial != null)
-        {
-            pathRenderer.Initialize(divineMaterial, pathWidth, pathHeight, pathColor);
-        }
+        InitializeDivineLine();
         
         Debug.Log("AR Navigation Manager initialized for virtual mode");
     }
@@ -153,6 +287,10 @@ public class ARNavigationManager : MonoBehaviour
         this.destination = destination;
         this.currentNavigationStoreId = storeId;
         this.currentNavigationStoreName = storeName;
+        
+        // Reset state tracking variables
+        hasNotifiedCloseToDestination = false;
+        lastReachedWaypointIndex = -1;
         
         // Place destination marker
         PlaceDestinationMarker(destination);
@@ -185,11 +323,29 @@ public class ARNavigationManager : MonoBehaviour
         // Clean up path visualization
         if (pathRenderer)
         {
-            pathRenderer.ClearPath();
+            pathRenderer.Hide();
         }
         
         // Clean up markers
-        if (destinationMarker) Destroy(destinationMarker);
+        if (destinationMarker != null)
+        {
+            if (completed)
+            {
+                // Play completion animation
+                StartCoroutine(AnimateDestinationReached());
+            }
+            else
+            {
+                // Just destroy the marker
+                if (destinationMarkerObject != null)
+                {
+                    Destroy(destinationMarkerObject);
+                    destinationMarkerObject = null;
+                    destinationMarker = null;
+                }
+            }
+        }
+        
         foreach (var marker in waypointMarkers)
         {
             if (marker) Destroy(marker);
@@ -231,6 +387,25 @@ public class ARNavigationManager : MonoBehaviour
         currentNavigationStoreName = "";
         
         Debug.Log("Navigation stopped");
+    }
+    
+    private IEnumerator AnimateDestinationReached()
+    {
+        if (destinationMarker == null) yield break;
+        
+        // Enhance the destination marker on arrival
+        destinationMarker.SetColor(Color.green);
+        
+        // Wait for animation to play
+        yield return new WaitForSeconds(3.0f);
+        
+        // Destroy the marker
+        if (destinationMarkerObject != null)
+        {
+            Destroy(destinationMarkerObject);
+            destinationMarkerObject = null;
+            destinationMarker = null;
+        }
     }
 
     private void CalculatePath(Vector3 start, Vector3 end)
@@ -275,8 +450,8 @@ public class ARNavigationManager : MonoBehaviour
     private void UpdatePath()
     {
         if (!isNavigating) return;
-
-        Vector3 currentPosition = arCamera.transform.position;
+        
+        Vector3 currentPosition = GetCurrentPosition();
         CalculatePath(currentPosition, destination);
     }
 
@@ -305,8 +480,7 @@ public class ARNavigationManager : MonoBehaviour
 
     private void OnPlanesChanged(ARPlanesChangedEventArgs args)
     {
-        // Update path when new planes are detected
-        if (isNavigating && args.added.Count > 0)
+        if (isNavigating)
         {
             UpdatePath();
         }
@@ -318,62 +492,67 @@ public class ARNavigationManager : MonoBehaviour
         {
             planeManager.planesChanged -= OnPlanesChanged;
         }
+        
+        StopAllCoroutines();
     }
 
-    // Public methods for external control
-    public bool IsNavigating => isNavigating;
-    public Vector3 CurrentDestination => destination;
+    public bool IsNavigating() => isNavigating;
+    public Vector3 GetDestination() => destination;
 
     public void UpdateDestination(Vector3 newDestination)
     {
-        if (isNavigating)
+        if (!isNavigating) return;
+        
+        destination = newDestination;
+        
+        // Update destination marker
+        if (destinationMarker != null)
         {
-            destination = newDestination;
-            if (destinationMarker)
-            {
-                destinationMarker.transform.position = newDestination;
-            }
-            UpdatePath();
+            destinationMarker.UpdatePosition(destination);
         }
+        else
+        {
+            PlaceDestinationMarker(destination);
+        }
+        
+        // Recalculate path
+        UpdatePath();
     }
 
     public float GetRemainingDistance()
     {
-        if (!isNavigating || currentPath.Count < 2) return 0f;
-
-        float distance = 0f;
-        for (int i = 0; i < currentPath.Count - 1; i++)
-        {
-            distance += Vector3.Distance(currentPath[i], currentPath[i + 1]);
-        }
-        return distance;
+        if (!isNavigating) return 0f;
+        
+        Vector3 currentPosition = GetCurrentPosition();
+        return Vector3.Distance(currentPosition, destination);
     }
 
     public Vector3 GetNextWaypoint()
     {
         if (!isNavigating || currentPath.Count < 2) return Vector3.zero;
-
-        Vector3 currentPos = arCamera.transform.position;
-        float minDist = float.MaxValue;
-        int nearestIndex = 0;
-
-        // Find the nearest point on the path
+        
+        Vector3 currentPosition = GetCurrentPosition();
+        float minDistance = float.MaxValue;
+        int closestWaypointIndex = -1;
+        
+        // Find the closest waypoint on the path
         for (int i = 0; i < currentPath.Count; i++)
         {
-            float dist = Vector3.Distance(currentPos, currentPath[i]);
-            if (dist < minDist)
+            float distance = Vector3.Distance(currentPosition, currentPath[i]);
+            if (distance < minDistance)
             {
-                minDist = dist;
-                nearestIndex = i;
+                minDistance = distance;
+                closestWaypointIndex = i;
             }
         }
-
-        // Return the next waypoint
-        if (nearestIndex < currentPath.Count - 1)
+        
+        // Return the next waypoint after the closest one
+        if (closestWaypointIndex >= 0 && closestWaypointIndex < currentPath.Count - 1)
         {
-            return currentPath[nearestIndex + 1];
+            return currentPath[closestWaypointIndex + 1];
         }
-
+        
+        // If no suitable waypoint found, return the destination
         return destination;
     }
 
@@ -381,18 +560,8 @@ public class ARNavigationManager : MonoBehaviour
     {
         while (isNavigating)
         {
+            UpdatePath();
             yield return new WaitForSeconds(pathUpdateInterval);
-            
-            Vector3 currentPosition = GetCurrentPosition();
-            CalculatePath(currentPosition, destination);
-            
-            // Check if we've reached the destination
-            float distanceToDestination = Vector3.Distance(currentPosition, destination);
-            if (distanceToDestination < 1.0f)
-            {
-                StopNavigation(true);
-                yield break;
-            }
         }
     }
 
@@ -400,50 +569,62 @@ public class ARNavigationManager : MonoBehaviour
     {
         if (positioningSystem != null && positioningSystem.IsTracking())
         {
-            // Use indoor positioning when available
-            return positioningSystem.GetCurrentPosition();
-        }
-        else if (arCamera != null)
-        {
-            // Fallback to camera position
-            return new Vector3(arCamera.transform.position.x, 0, arCamera.transform.position.z);
+            Vector3 position = positioningSystem.GetCurrentPosition();
+            return position;
         }
         
-        return Vector3.zero;
+        // Fallback to camera position if no positioning system
+        if (arCamera != null)
+        {
+            return arCamera.transform.position;
+        }
+        
+        return transform.position;
     }
 
     private void PlaceDestinationMarker(Vector3 position)
     {
+        // Clean up existing marker
+        if (destinationMarkerObject != null)
+        {
+            Destroy(destinationMarkerObject);
+            destinationMarkerObject = null;
+            destinationMarker = null;
+        }
+        
+        // Create new marker
         if (destinationMarkerPrefab != null)
         {
+            destinationMarkerObject = Instantiate(destinationMarkerPrefab, position, Quaternion.identity);
+            destinationMarker = destinationMarkerObject.GetComponent<DestinationMarker>();
+            
             if (destinationMarker != null)
             {
-                Destroy(destinationMarker);
+                // Initialize with the destination position
+                destinationMarker.Initialize(position);
+                
+                // Set color to match the divine line
+                destinationMarker.SetColor(pathColor);
             }
-            
-            Vector3 groundPosition = RaycastToGround(position);
-            destinationMarker = Instantiate(destinationMarkerPrefab, groundPosition, Quaternion.identity);
-            destinationMarker.transform.SetParent(transform);
         }
     }
 
     private void UpdateWaypointMarkers()
     {
-        if (waypointMarkerPrefab == null) return;
-        
-        // Clean up existing markers
+        // Clear existing markers
         foreach (var marker in waypointMarkers)
         {
-            Destroy(marker);
+            if (marker) Destroy(marker);
         }
         waypointMarkers.Clear();
         
-        // Only place waypoint markers at intervals
-        for (int i = 1; i < currentPath.Count - 1; i += 3)
+        // Skip if no path or no waypoint prefab
+        if (currentPath.Count <= 2 || waypointMarkerPrefab == null) return;
+        
+        // Place markers at each intermediate waypoint
+        for (int i = 1; i < currentPath.Count - 1; i++)
         {
-            GameObject marker = Instantiate(waypointMarkerPrefab, currentPath[i], Quaternion.identity);
-            marker.transform.SetParent(transform);
-            waypointMarkers.Add(marker);
+            PlaceWaypointMarker(currentPath[i]);
         }
     }
 } 
